@@ -102,13 +102,14 @@ class GithubTopByStars():
 
     log = logging.getLogger("fgp.GithubTopByStars")
 
-    def __init__(self, gql):
+    def __init__(self, gql, terms):
         self.gql = gql
+        self.terms = " " + terms if terms else ""
 
     def get_page(self, stars, after=''):
         body = """
         {
-          search(query: "stars:>%(stars)s is:public fork:false archived:false sort:stars-asc", type: REPOSITORY, first: 25, %(after)s) {
+          search(query: "stars:>%(stars)s%(terms)s is:public fork:false archived:false sort:stars-asc", type: REPOSITORY, first: 25, %(after)s) {
             repositoryCount
             pageInfo {
                 hasNextPage endCursor
@@ -146,7 +147,7 @@ class GithubTopByStars():
         }"""
         if after:
             after = 'after: "%s"' % after
-        qdata = body % {'after': after, 'stars': stars}
+        qdata = body % {'after': after, 'stars': stars, 'terms': self.terms}
         return self.gql.query(qdata=qdata)
 
     def strip(self, _repo):
@@ -206,6 +207,8 @@ def main():
         '--stars', help='Gather projects with stars > to',
         required=True)
     parser.add_argument(
+        '--terms', help='Extra search term such as language:ocaml')
+    parser.add_argument(
         '--json', help='Print a json list', action='store_true')
 
     args = parser.parse_args()
@@ -214,7 +217,7 @@ def main():
         level=getattr(logging, args.loglevel.upper()))
 
     gql = GithubGraphQLQuery(args.token)
-    reqc = GithubTopByStars(gql)
+    reqc = GithubTopByStars(gql, args.terms)
     repos = reqc.get_repos(args.stars)
     if args.json:
         print(json.dumps(repos))
