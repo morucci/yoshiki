@@ -26,6 +26,7 @@ import argparse
 import requests
 import logging
 import logging.config
+import json
 from time import sleep
 from datetime import datetime
 
@@ -190,7 +191,7 @@ class GithubTopByStars():
                 stars = repos[-1]['stars']
             else:
                 break
-        return repos
+        return sorted(repos, key=lambda x: x['stars'], reverse=True)epos
 
 
 def main():
@@ -204,6 +205,8 @@ def main():
     parser.add_argument(
         '--stars', help='Gather projects with stars > to',
         required=True)
+    parser.add_argument(
+        '--json', help='Print a json list', action='store_true')
 
     args = parser.parse_args()
 
@@ -213,8 +216,11 @@ def main():
     gql = GithubGraphQLQuery(args.token)
     reqc = GithubTopByStars(gql)
     repos = reqc.get_repos(args.stars)
-    for repo in sorted(repos, key=lambda x: x['stars'], reverse=True):
-        print(repo)
+    if args.json:
+        print(json.dumps(repos))
+    else:
+        for repo in repos:
+            print(repo)
 
 
 if __name__ == "__main__":
