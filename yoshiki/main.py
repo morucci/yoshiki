@@ -192,7 +192,7 @@ class GithubTopByStars():
                 stars = repos[-1]['stars']
             else:
                 break
-        return sorted(repos, key=lambda x: x['stars'], reverse=True)epos
+        return sorted(repos, key=lambda x: x['stars'], reverse=True)
 
 
 def main():
