@@ -32,6 +32,11 @@ from datetime import datetime
 
 from typing import Any, Dict
 
+
+class Query:
+    ...
+
+
 class GithubGraphQLQuery(object):
 
     log = logging.getLogger("fgp.GithubGraphQLQuery")
@@ -101,9 +106,19 @@ class GithubGraphQLQuery(object):
         return ret
 
 
-class GithubTopByStars():
+class GithubTopByStars(Query):
 
     log = logging.getLogger("fgp.GithubTopByStars")
+
+    @staticmethod
+    def sub_parser(parser: argparse._SubParsersAction) -> None:
+        sub = parser.add_parser("search-top-projects")
+        sub.set_defaults(query=GithubTopByStars)
+        sub.add_argument(
+            '--stars', help='Gather projects with stars > to',
+            required=True)
+        sub.add_argument(
+            '--terms', help='Extra search term such as language:ocaml')
 
     def __init__(self, gql, terms):
         self.gql = gql
@@ -198,7 +213,9 @@ class GithubTopByStars():
         return sorted(repos, key=lambda x: x['stars'], reverse=True)
 
 
-def main():
+queries = [GithubTopByStars]
+
+def main() -> None:
 
     parser = argparse.ArgumentParser(prog='fgp')
     parser.add_argument(
@@ -207,12 +224,9 @@ def main():
         '--token', help='The token used to query github api',
         required=True)
     parser.add_argument(
-        '--stars', help='Gather projects with stars > to',
-        required=True)
-    parser.add_argument(
-        '--terms', help='Extra search term such as language:ocaml')
-    parser.add_argument(
         '--json', help='Print a json list', action='store_true')
+    sub_parser = parser.add_subparsers()
+    [query.sub_parser(sub_parser) for query in queries]
 
     args = parser.parse_args()
 
