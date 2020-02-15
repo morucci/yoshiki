@@ -30,6 +30,7 @@ import json
 from time import sleep
 from datetime import datetime
 
+from typing import Any, Dict
 
 class GithubGraphQLQuery(object):
 
@@ -77,14 +78,16 @@ class GithubGraphQLQuery(object):
             resetAt
           }
         }'''
-        data = self.query(qdata, skip_get_rate_limit=True)
+        data = self._query(qdata)
         return data['data']['rateLimit']
 
-    def query(self, qdata, skip_get_rate_limit=False, ignore_not_found=False):
-        if not skip_get_rate_limit:
-            if self.query_count % self.get_rate_limit_rate == 0:
-                self.get_rate_limit()
-            self.wait_for_call()
+    def query(self, qdata: str, ignore_not_found: bool=False) -> Dict[str, Any]:
+        if self.query_count % self.get_rate_limit_rate == 0:
+            self.get_rate_limit()
+        self.wait_for_call()
+        return self._query(qdata, ignore_not_found)
+
+    def _query(self, qdata: str, ignore_not_found: bool=False) -> Dict[str, Any]:
         data = {'query': qdata}
         r = self.session.post(
             url=self.url, json=data, headers=self.headers,
