@@ -60,7 +60,7 @@ class Query(ABC):
 
 class GithubGraphQLQuery(object):
 
-    log = logging.getLogger("fgp.GithubGraphQLQuery")
+    log = logging.getLogger("yoshiki.GithubGraphQLQuery")
 
     def __init__(self, token: str, url = 'https://api.github.com/graphql') -> None:
         self.url = url
@@ -139,11 +139,11 @@ class GithubGraphQLQuery(object):
 
 class PaginatedQuery(Query):
     def __init__(self):
-        self.after: str = ''
+        self.after: Optional[str] = None
         self.count: Optional[int] = None
 
     def next_graph_query(self) -> Optional[str]:
-        if self.count and self.after == '':
+        if self.count and not self.after:
             return None
         return self.graph_query()
 
@@ -152,14 +152,13 @@ class PaginatedQuery(Query):
         ...
 
 
-class GithubTopByStars(PaginatedQuery):
-
-    log = logging.getLogger("fgp.GithubTopByStars")
+class SearchProjects(PaginatedQuery):
+    log = logging.getLogger("yoshiki.SearchProjects")
 
     @staticmethod
     def sub_parser(parser: argparse._SubParsersAction) -> None:
-        sub = parser.add_parser("search-top-projects")
-        sub.set_defaults(query=GithubTopByStars)
+        sub = parser.add_parser("search-projects")
+        sub.set_defaults(query=SearchProjects)
         sub.add_argument(
             '--stars', help='Gather projects with stars > to',
             required=True)
@@ -175,7 +174,7 @@ class GithubTopByStars(PaginatedQuery):
         return dedent(
         """
         {
-          search(query: "stars:>%(stars)s%(terms)s is:public fork:false archived:false sort:stars-asc", type: REPOSITORY, first: 25, %(after)s) {
+          search(query: "stars:>%(stars)s%(terms)s is:public fork:false archived:false sort:stars-asc", type: REPOSITORY, first: 25%(after)s) {
             repositoryCount
             pageInfo {
                 hasNextPage endCursor
@@ -212,7 +211,7 @@ class GithubTopByStars(PaginatedQuery):
           }
         }
         """ % dict(
-            after=' after: "%s"' % self.after if self.after else '',
+            after=', after: "%s"' % self.after if self.after else '',
             stars=self.stars,
             terms=' ' + self.terms if self.terms else '',
         ))
@@ -233,7 +232,7 @@ class GithubTopByStars(PaginatedQuery):
                     _repo['repositoryTopics']['edges']]
             }
         except Exception:
-            GithubTopByStars.log.info("Error to parse repository data %s" % _repo)
+            self.log.exception("Error to parse repository data %s" % _repo)
             return {}
 
     def transform_result(self, ret: Raw) -> Results:
@@ -250,11 +249,11 @@ class GithubTopByStars(PaginatedQuery):
         return repos
 
     def sort(self, results: Results) -> Results:
-        return sorted(results, key=lambda x: x['stars'], reverse=True)
+        return sorted(results, key=lambda x: x.get('stars', 0), reverse=True)
 
 
 class Followers(PaginatedQuery):
-    log = logging.getLogger("fgp.Followers")
+    log = logging.getLogger("yoshiki.Followers")
     connection = 'followers'
 
     @staticmethod
@@ -302,7 +301,7 @@ class Followers(PaginatedQuery):
 
 
 class Following(Followers):
-    log = logging.getLogger("fgp.Following")
+    log = logging.getLogger("yoshiki.Following")
     connection = 'following'
 
     @staticmethod
@@ -312,11 +311,11 @@ class Following(Followers):
         sub.add_argument('--username', help='The user name', required=True)
 
 
-queries = [GithubTopByStars, Followers, Following]
+queries = [SearchProjects, Followers, Following]
 
 def main() -> None:
 
-    parser = argparse.ArgumentParser(prog='fgp')
+    parser = argparse.ArgumentParser(prog='yoshiki')
     parser.add_argument(
         '--loglevel', help='logging level', default='INFO')
     parser.add_argument(
