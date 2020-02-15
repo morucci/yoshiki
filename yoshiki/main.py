@@ -36,7 +36,7 @@ class GithubGraphQLQuery(object):
 
     log = logging.getLogger("fgp.GithubGraphQLQuery")
 
-    def __init__(self, token, url = 'https://api.github.com/graphql'):
+    def __init__(self, token: str, url = 'https://api.github.com/graphql') -> None:
         self.url = url
         self.headers = {'Authorization': 'token %s' % token}
         self.session = requests.session()
@@ -45,9 +45,9 @@ class GithubGraphQLQuery(object):
         self.query_count = 0
         # Set an initial value
         self.quota_remain = 5000
-        self.get_rate_limit()
+        self.set_rate_limit()
 
-    def get_rate_limit(self):
+    def set_rate_limit(self) -> None:
         try:
             ratelimit = self.getRateLimit()
         except requests.exceptions.ConnectionError:
@@ -59,7 +59,7 @@ class GithubGraphQLQuery(object):
         self.log.info("Got rate limit data: remain %s resetat %s" % (
             self.quota_remain, self.resetat))
 
-    def wait_for_call(self):
+    def wait_for_call(self) -> None:
         if self.quota_remain <= 150:
             until_reset = self.resetat - datetime.utcnow()
             self.log.info(
@@ -67,9 +67,9 @@ class GithubGraphQLQuery(object):
                 "reset: %s/secs waiting ..." % (
                     self.quota_remain, until_reset.seconds))
             sleep(until_reset.seconds + 60)
-            self.get_rate_limit()
+            self.set_rate_limit()
 
-    def getRateLimit(self):
+    def getRateLimit(self) -> Dict[str, Any]:
         qdata = '''{
           rateLimit {
             limit
@@ -83,7 +83,7 @@ class GithubGraphQLQuery(object):
 
     def query(self, qdata: str, ignore_not_found: bool=False) -> Dict[str, Any]:
         if self.query_count % self.get_rate_limit_rate == 0:
-            self.get_rate_limit()
+            self.set_rate_limit()
         self.wait_for_call()
         return self._query(qdata, ignore_not_found)
 
