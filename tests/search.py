@@ -24,6 +24,7 @@
 import logging
 logging.basicConfig(level=getattr(logging, 'DEBUG'))
 
+import argparse
 import json
 import unittest
 from . utils import github_mock, timestamp
@@ -54,7 +55,7 @@ class TestSearch(unittest.TestCase):
 
     def test_search(self) -> None:
         gql = yoshiki.main.GithubGraphQLQuery("fake-token", 'http://localhost:8080')
-        reqc = yoshiki.main.GithubTopByStars(gql, None)
-        repos = reqc.get_repos(42)
+        reqc = yoshiki.main.GithubTopByStars(argparse.Namespace(stars=42, terms=''))
+        repos = gql.run(reqc)
         print(repos)
-        self.assertEquals(len(repos), 2)
+        self.assertEqual(len(repos), 2)

@@ -30,11 +30,27 @@ import json
 from time import sleep
 from datetime import datetime
 
-from typing import Any, Dict
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional
 
 
-class Query:
-    ...
+Raw = Dict[str, Any]
+Result = Dict[str, Any]
+Results = List[Result]
+
+
+class Query(ABC):
+    @abstractmethod
+    def next_graph_query(self) -> Optional[str]:
+        ...
+
+    @abstractmethod
+    def transform_result(self, raw: Raw) -> Results:
+        ...
+
+    @abstractmethod
+    def sort(self, results: Results) -> Results:
+        ...
 
 
 class GithubGraphQLQuery(object):
@@ -105,6 +121,16 @@ class GithubGraphQLQuery(object):
             raise Exception("Errors in response see: %s" % r.text)
         return ret
 
+    def run(self, query: Query) -> Results:
+        results: Results = []
+        while True:
+            graph_query = query.next_graph_query()
+            if not graph_query:
+                break
+            data = self.query(graph_query)
+            results += query.transform_result(data)
+        return query.sort(results)
+
 
 class GithubTopByStars(Query):
 
@@ -120,11 +146,15 @@ class GithubTopByStars(Query):
         sub.add_argument(
             '--terms', help='Extra search term such as language:ocaml')
 
-    def __init__(self, gql, terms):
-        self.gql = gql
-        self.terms = " " + terms if terms else ""
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.after: str = ''
+        self.stars: int = int(args.stars)
+        self.terms: str = args.terms
+        self.count: Optional[int] = None
 
-    def get_page(self, stars, after=''):
+    def next_graph_query(self) -> Optional[str]:
+        if self.count and self.after == '':
+            return None
         body = """
         {
           search(query: "stars:>%(stars)s%(terms)s is:public fork:false archived:false sort:stars-asc", type: REPOSITORY, first: 25, %(after)s) {
@@ -163,12 +193,13 @@ class GithubTopByStars(Query):
             }
           }
         }"""
-        if after:
-            after = 'after: "%s"' % after
-        qdata = body % {'after': after, 'stars': stars, 'terms': self.terms}
-        return self.gql.query(qdata=qdata)
+        return body % dict(
+            after=' after: "%s"' % self.after if self.after else '',
+            stars=self.stars,
+            terms=' ' + self.terms if self.terms else '',
+        )
 
-    def strip(self, _repo):
+    def strip(self, _repo: Dict[str, Any]) -> Dict[str, Any]:
         _repo = _repo['node']
         try:
             return {
@@ -184,33 +215,24 @@ class GithubTopByStars(Query):
                     _repo['repositoryTopics']['edges']]
             }
         except Exception:
-            self.log.info("Error to parse repository data %s" % _repo)
-            return None
+            GithubTopByStars.log.info("Error to parse repository data %s" % _repo)
+            return {}
 
-    def get_repos(self, stars):
-        repos = []
-        repo_count = None
-        while True:
-            after = ''
-            while True:
-                ret = self.get_page(stars, after=after)
-                if not repo_count:
-                    repo_count = ret['data']['search']['repositoryCount']
-                    self.log.info("%s repositories to fetch" % repo_count)
-                pageInfo = ret['data']['search']['pageInfo']
-                _repos = ret['data']['search']['edges']
-                _repos = [sr for sr in [self.strip(r) for r in _repos] if sr]
-                repos.extend(_repos)
-                self.log.info("%s repositories read" % len(repos))
-                if pageInfo['hasNextPage']:
-                    after = pageInfo['endCursor']
-                else:
-                    break
-            if len(repos) < repo_count and len(_repos) == 25:
-                stars = repos[-1]['stars']
-            else:
-                break
-        return sorted(repos, key=lambda x: x['stars'], reverse=True)
+    def transform_result(self, ret: Raw) -> Results:
+        if not self.count:
+            self.count = int(ret['data']['search']['repositoryCount'])
+            self.log.info(f"{self.count} repositories to fetch")
+        pageInfo = ret['data']['search']['pageInfo']
+        if pageInfo['hasNextPage']:
+            self.after = pageInfo['endCursor']
+        else:
+            self.after = ''
+        repos = [sr for sr in [self.strip(r) for r in ret['data']['search']['edges']] if sr]
+        self.log.info("%s repositories read" % len(repos))
+        return repos
+
+    def sort(self, results: Results) -> Results:
+        return sorted(results, key=lambda x: x['stars'], reverse=True)
 
 
 queries = [GithubTopByStars]
@@ -234,13 +256,13 @@ def main() -> None:
         level=getattr(logging, args.loglevel.upper()))
 
     gql = GithubGraphQLQuery(args.token)
-    reqc = GithubTopByStars(gql, args.terms)
-    repos = reqc.get_repos(args.stars)
+    query = args.query(args)
+    results = gql.run(query)
     if args.json:
-        print(json.dumps(repos))
+        print(json.dumps(results))
     else:
-        for repo in repos:
-            print(repo)
+        for result in results:
+            print(result)
 
 
 if __name__ == "__main__":
