@@ -255,10 +255,11 @@ class GithubTopByStars(PaginatedQuery):
 
 class Followers(PaginatedQuery):
     log = logging.getLogger("fgp.Followers")
+    connection = 'followers'
 
     @staticmethod
     def sub_parser(parser: argparse._SubParsersAction) -> None:
-        sub = parser.add_parser("list-followers")
+        sub = parser.add_parser(f"list-followers")
         sub.set_defaults(query=Followers)
         sub.add_argument('--username', help='The user name', required=True)
 
@@ -266,12 +267,12 @@ class Followers(PaginatedQuery):
         super().__init__()
         self.username: str = args.username
 
-    def graph_query(self) -> str:
+    def graph_query(self, connection='followers') -> str:
         return dedent(
         """
         {
           user(login: "%(username)s") {
-            followers(first: 100%(after)s) {
+            %(connection)s(first: 100%(after)s) {
               edges {
                 node {
                   name
@@ -282,7 +283,8 @@ class Followers(PaginatedQuery):
           }
         }
         """ % dict(after=', after: "%s"' % self.after if self.after else '',
-                   username=self.username))
+                   username=self.username,
+                   connection=self.connection))
 
     def strip(self, edge: Dict[str, Any]) -> Result:
         try:
@@ -292,14 +294,25 @@ class Followers(PaginatedQuery):
             return {}
 
     def transform_result(self, raw: Raw) -> Results:
-        followers = raw['data']['user']['followers']['edges']
+        followers = raw['data']['user'][self.connection]['edges']
         if not self.count:
             self.count = len(followers)
-        self.log.info(f"{self.count} followers read")
+        self.log.info(f"{self.count} {self.connection} read")
         return [user for user in [self.strip(edge) for edge in followers] if followers]
 
 
-queries = [GithubTopByStars, Followers]
+class Following(Followers):
+    log = logging.getLogger("fgp.Following")
+    connection = 'following'
+
+    @staticmethod
+    def sub_parser(parser: argparse._SubParsersAction) -> None:
+        sub = parser.add_parser(f"list-following")
+        sub.set_defaults(query=Following)
+        sub.add_argument('--username', help='The user name', required=True)
+
+
+queries = [GithubTopByStars, Followers, Following]
 
 def main() -> None:
 
