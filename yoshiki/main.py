@@ -27,6 +27,7 @@ import requests
 import logging
 import logging.config
 import json
+from textwrap import dedent
 from time import sleep
 from datetime import datetime
 
@@ -40,6 +41,11 @@ Results = List[Result]
 
 
 class Query(ABC):
+    @staticmethod
+    @abstractmethod
+    def sub_parser(parser: argparse._SubParsersAction) -> None:
+        ...
+
     @abstractmethod
     def next_graph_query(self) -> Optional[str]:
         ...
@@ -48,9 +54,8 @@ class Query(ABC):
     def transform_result(self, raw: Raw) -> Results:
         ...
 
-    @abstractmethod
     def sort(self, results: Results) -> Results:
-        ...
+        return results
 
 
 class GithubGraphQLQuery(object):
@@ -132,7 +137,22 @@ class GithubGraphQLQuery(object):
         return query.sort(results)
 
 
-class GithubTopByStars(Query):
+class PaginatedQuery(Query):
+    def __init__(self):
+        self.after: str = ''
+        self.count: Optional[int] = None
+
+    def next_graph_query(self) -> Optional[str]:
+        if self.count and self.after == '':
+            return None
+        return self.graph_query()
+
+    @abstractmethod
+    def graph_query(self) -> str:
+        ...
+
+
+class GithubTopByStars(PaginatedQuery):
 
     log = logging.getLogger("fgp.GithubTopByStars")
 
@@ -147,15 +167,13 @@ class GithubTopByStars(Query):
             '--terms', help='Extra search term such as language:ocaml')
 
     def __init__(self, args: argparse.Namespace) -> None:
-        self.after: str = ''
+        super().__init__()
         self.stars: int = int(args.stars)
         self.terms: str = args.terms
-        self.count: Optional[int] = None
 
-    def next_graph_query(self) -> Optional[str]:
-        if self.count and self.after == '':
-            return None
-        body = """
+    def graph_query(self) -> str:
+        return dedent(
+        """
         {
           search(query: "stars:>%(stars)s%(terms)s is:public fork:false archived:false sort:stars-asc", type: REPOSITORY, first: 25, %(after)s) {
             repositoryCount
@@ -192,12 +210,12 @@ class GithubTopByStars(Query):
               }
             }
           }
-        }"""
-        return body % dict(
+        }
+        """ % dict(
             after=' after: "%s"' % self.after if self.after else '',
             stars=self.stars,
             terms=' ' + self.terms if self.terms else '',
-        )
+        ))
 
     def strip(self, _repo: Dict[str, Any]) -> Dict[str, Any]:
         _repo = _repo['node']
@@ -235,7 +253,53 @@ class GithubTopByStars(Query):
         return sorted(results, key=lambda x: x['stars'], reverse=True)
 
 
-queries = [GithubTopByStars]
+class Followers(PaginatedQuery):
+    log = logging.getLogger("fgp.Followers")
+
+    @staticmethod
+    def sub_parser(parser: argparse._SubParsersAction) -> None:
+        sub = parser.add_parser("list-followers")
+        sub.set_defaults(query=Followers)
+        sub.add_argument('--username', help='The user name', required=True)
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        super().__init__()
+        self.username: str = args.username
+
+    def graph_query(self) -> str:
+        return dedent(
+        """
+        {
+          user(login: "%(username)s") {
+            followers(first: 100%(after)s) {
+              edges {
+                node {
+                  name
+                  login
+                }
+              }
+            }
+          }
+        }
+        """ % dict(after=', after: "%s"' % self.after if self.after else '',
+                   username=self.username))
+
+    def strip(self, edge: Dict[str, Any]) -> Result:
+        try:
+            return dict(name=edge['node']['name'], login=edge['node']['login'])
+        except Exception:
+            self.log.exception(f"Failed to parse {edge}")
+            return {}
+
+    def transform_result(self, raw: Raw) -> Results:
+        followers = raw['data']['user']['followers']['edges']
+        if not self.count:
+            self.count = len(followers)
+        self.log.info(f"{self.count} followers read")
+        return [user for user in [self.strip(edge) for edge in followers] if followers]
+
+
+queries = [GithubTopByStars, Followers]
 
 def main() -> None:
 
