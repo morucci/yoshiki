@@ -35,8 +35,8 @@ class GithubGraphQLQuery(object):
 
     log = logging.getLogger("fgp.GithubGraphQLQuery")
 
-    def __init__(self, token):
-        self.url = 'https://api.github.com/graphql'
+    def __init__(self, token, url = 'https://api.github.com/graphql'):
+        self.url = url
         self.headers = {'Authorization': 'token %s' % token}
         self.session = requests.session()
         # Will get every 25 requests
