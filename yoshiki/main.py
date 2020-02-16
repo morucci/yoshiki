@@ -318,7 +318,76 @@ class Following(Followers):
         sub.add_argument('--username', help='The user name', required=True)
 
 
-queries = [SearchProjects, Followers, Following]
+class Repositories(PaginatedQuery):
+    log = logging.getLogger("yoshiki.Repositories")
+
+    @staticmethod
+    def sub_parser(parser: argparse._SubParsersAction) -> None:
+        sub = parser.add_parser(f"list-repositories")
+        sub.set_defaults(query=Repositories)
+        sub.add_argument('--username', help='The user name', required=True)
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        super().__init__()
+        self.username: str = args.username
+
+    def graph_query(self) -> str:
+        return dedent(
+        """
+        {
+          user(login: "%(username)s") {
+            repositories(isFork: false first: 100 orderBy: {direction: DESC field: STARGAZERS}%(after)s) {
+              totalCount
+              pageInfo {
+                hasNextPage endCursor
+              }
+              edges {
+                node {
+                  nameWithOwner
+                  defaultBranchRef {
+                      name
+                  }
+                  description
+                  stargazers {
+                    totalCount
+                  }
+                  forks {
+                    totalCount
+                  }
+                  watchers {
+                    totalCount
+                  }
+                  repositoryTopics(first: 100) {
+                    edges {
+                        node {
+                          topic {
+                            name
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """ % dict(after=', after: "%s"' % self.after if self.after else '',
+                   username=self.username))
+
+    def transform_result(self, ret: Raw) -> Results:
+        if not self.count:
+            self.count = int(ret['data']['user']['repositories']['totalCount'])
+            self.log.info(f"{self.count} repositories to fetch")
+        pageInfo = ret['data']['user']['repositories']['pageInfo']
+        if pageInfo['hasNextPage']:
+            self.after = pageInfo['endCursor']
+        else:
+            self.after = ''
+        repos = [sr for sr in [SearchProjects.strip(r) for r in ret['data']['user']['repositories']['edges']] if sr]
+        self.log.info("%s repositories read" % len(repos))
+        return repos
+
+queries = [SearchProjects, Followers, Following, Repositories]
 
 def main() -> None:
 
