@@ -34,28 +34,9 @@ from datetime import datetime
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-
-Raw = Dict[str, Any]
-Result = Dict[str, Any]
-Results = List[Result]
-
-
-class Query(ABC):
-    @staticmethod
-    @abstractmethod
-    def sub_parser(parser: argparse._SubParsersAction) -> None:
-        ...
-
-    @abstractmethod
-    def next_graph_query(self) -> Optional[str]:
-        ...
-
-    @abstractmethod
-    def transform_result(self, raw: Raw) -> Results:
-        ...
-
-    def sort(self, results: Results) -> Results:
-        return results
+from . helpers import Query, PaginatedQuery, Raw, Result, Results
+from . user import Followers, Following
+from . repository import Stargazers, Watchers
 
 
 class GithubGraphQLQuery(object):
@@ -140,21 +121,6 @@ class GithubGraphQLQuery(object):
             data = self.query(graph_query)
             results += query.transform_result(data)
         return query.sort(results)
-
-
-class PaginatedQuery(Query):
-    def __init__(self) -> None:
-        self.after: Optional[str] = None
-        self.count: Optional[int] = None
-
-    def next_graph_query(self) -> Optional[str]:
-        if self.count and not self.after:
-            return None
-        return self.graph_query()
-
-    @abstractmethod
-    def graph_query(self) -> str:
-        ...
 
 
 class SearchProjects(PaginatedQuery):
@@ -262,77 +228,6 @@ class SearchProjects(PaginatedQuery):
         return sorted(results, key=lambda x: x.get('stars', 0), reverse=True)
 
 
-class User(PaginatedQuery):
-    log = logging.getLogger("yoshiki.User")
-    connection = ''
-
-    def __init__(self, args: argparse.Namespace) -> None:
-        super().__init__()
-        self.username: str = args.username
-
-    def graph_query(self) -> str:
-        return dedent(
-        """
-        {
-          user(login: "%(username)s") {
-            %(connection)s(first: 100%(after)s) {
-              pageInfo {
-                hasNextPage endCursor
-              }
-              edges {
-                node {
-                  name
-                  login
-                }
-              }
-            }
-          }
-        }
-        """ % dict(after=', after: "%s"' % self.after if self.after else '',
-                   username=self.username,
-                   connection=self.connection))
-
-    @staticmethod
-    def strip(edge: Result) -> Result:
-        try:
-            return dict(name=edge['node']['name'], login=edge['node']['login'])
-        except Exception:
-            User.log.exception(f"Failed to parse {edge}")
-            return {}
-
-    def transform_result(self, raw: Raw) -> Results:
-        edges = raw['data']['user'][self.connection]['edges']
-        if not self.count:
-            self.count = len(edges)
-            self.log.info(f"{self.count} {self.connection} to fetch")
-        pageInfo = raw['data']['user'][self.connection]['pageInfo']
-        if pageInfo['hasNextPage']:
-            self.after = pageInfo['endCursor']
-        else:
-            self.after = ''
-        self.log.info(f"{self.count} {self.connection} read")
-        return [user for user in [Followers.strip(edge) for edge in edges] if edges]
-
-
-class Followers(User):
-    connection = 'followers'
-
-    @staticmethod
-    def sub_parser(parser: argparse._SubParsersAction) -> None:
-        sub = parser.add_parser(f"list-followers")
-        sub.set_defaults(query=Followers)
-        sub.add_argument('--username', help='The user name', required=True)
-
-
-class Following(User):
-    connection = 'following'
-
-    @staticmethod
-    def sub_parser(parser: argparse._SubParsersAction) -> None:
-        sub = parser.add_parser(f"list-following")
-        sub.set_defaults(query=Following)
-        sub.add_argument('--username', help='The user name', required=True)
-
 
 class Repositories(PaginatedQuery):
     log = logging.getLogger("yoshiki.Repositories")
@@ -407,70 +302,6 @@ class Repositories(PaginatedQuery):
         repos = [sr for sr in [SearchProjects.strip(r) for r in ret['data']['user']['repositories']['edges']] if sr]
         self.log.info("%s repositories read" % len(repos))
         return repos
-
-
-class Repository(PaginatedQuery):
-    log = logging.getLogger("yoshiki.Repository")
-    connection = ''
-
-    def __init__(self, args: argparse.Namespace) -> None:
-        super().__init__()
-        self.repository: str = args.repository
-
-    def graph_query(self) -> str:
-        return dedent(
-        """
-        {
-          repository(name: "%(name)s", owner: "%(owner)s") {
-            %(connection)s(first: 100%(after)s) {
-              pageInfo {
-                hasNextPage endCursor
-              }
-              edges {
-                node {
-                  name
-                  login
-                }
-              }
-            }
-          }
-        }
-        """ % dict(after=', after: "%s"' % self.after if self.after else '',
-                   owner=self.repository.split('/')[0],
-                   name=self.repository.split('/')[1],
-                   connection=self.connection))
-
-    def transform_result(self, raw: Raw) -> Results:
-        edges = raw['data']['repository'][self.connection]['edges']
-        if not self.count:
-            self.count = len(edges)
-        pageInfo = raw['data']['repository'][self.connection]['pageInfo']
-        if pageInfo['hasNextPage']:
-            self.after = pageInfo['endCursor']
-        else:
-            self.after = ''
-        self.log.info(f"{self.count} {self.connection} read")
-        return [user for user in [User.strip(edge) for edge in edges] if edges]
-
-
-class Stargazers(Repository):
-    connection = 'stargazers'
-
-    @staticmethod
-    def sub_parser(parser: argparse._SubParsersAction) -> None:
-        sub = parser.add_parser(f"list-stargazers")
-        sub.set_defaults(query=Stargazers)
-        sub.add_argument('--repository', help='The repository name', required=True)
-
-
-class Watchers(Repository):
-    connection = 'watchers'
-
-    @staticmethod
-    def sub_parser(parser: argparse._SubParsersAction) -> None:
-        sub = parser.add_parser(f"list-watchers")
-        sub.set_defaults(query=Watchers)
-        sub.add_argument('--repository', help='The repository name', required=True)
 
 
 queries = [SearchProjects, Followers, Following, Repositories, Stargazers, Watchers]
