@@ -262,15 +262,9 @@ class SearchProjects(PaginatedQuery):
         return sorted(results, key=lambda x: x.get('stars', 0), reverse=True)
 
 
-class Followers(PaginatedQuery):
-    log = logging.getLogger("yoshiki.Followers")
-    connection = 'followers'
-
-    @staticmethod
-    def sub_parser(parser: argparse._SubParsersAction) -> None:
-        sub = parser.add_parser(f"list-followers")
-        sub.set_defaults(query=Followers)
-        sub.add_argument('--username', help='The user name', required=True)
+class User(PaginatedQuery):
+    log = logging.getLogger("yoshiki.User")
+    connection = ''
 
     def __init__(self, args: argparse.Namespace) -> None:
         super().__init__()
@@ -282,6 +276,9 @@ class Followers(PaginatedQuery):
         {
           user(login: "%(username)s") {
             %(connection)s(first: 100%(after)s) {
+              pageInfo {
+                hasNextPage endCursor
+              }
               edges {
                 node {
                   name
@@ -300,19 +297,34 @@ class Followers(PaginatedQuery):
         try:
             return dict(name=edge['node']['name'], login=edge['node']['login'])
         except Exception:
-            Followers.log.exception(f"Failed to parse {edge}")
+            User.log.exception(f"Failed to parse {edge}")
             return {}
 
     def transform_result(self, raw: Raw) -> Results:
-        followers = raw['data']['user'][self.connection]['edges']
+        edges = raw['data']['user'][self.connection]['edges']
         if not self.count:
-            self.count = len(followers)
+            self.count = len(edges)
+            self.log.info(f"{self.count} {self.connection} to fetch")
+        pageInfo = raw['data']['user'][self.connection]['pageInfo']
+        if pageInfo['hasNextPage']:
+            self.after = pageInfo['endCursor']
+        else:
+            self.after = ''
         self.log.info(f"{self.count} {self.connection} read")
-        return [user for user in [Followers.strip(edge) for edge in followers] if followers]
+        return [user for user in [Followers.strip(edge) for edge in edges] if edges]
 
 
-class Following(Followers):
-    log = logging.getLogger("yoshiki.Following")
+class Followers(User):
+    connection = 'followers'
+
+    @staticmethod
+    def sub_parser(parser: argparse._SubParsersAction) -> None:
+        sub = parser.add_parser(f"list-followers")
+        sub.set_defaults(query=Followers)
+        sub.add_argument('--username', help='The user name', required=True)
+
+
+class Following(User):
     connection = 'following'
 
     @staticmethod
@@ -438,7 +450,7 @@ class Repository(PaginatedQuery):
         else:
             self.after = ''
         self.log.info(f"{self.count} {self.connection} read")
-        return [user for user in [Followers.strip(edge) for edge in edges] if edges]
+        return [user for user in [User.strip(edge) for edge in edges] if edges]
 
 
 class Stargazers(Repository):
