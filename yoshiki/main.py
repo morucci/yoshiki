@@ -27,16 +27,43 @@ import requests
 import logging
 import logging.config
 import json
+from textwrap import dedent
 from time import sleep
 from datetime import datetime
+
+from abc import ABC, abstractmethod
+from typing import Any, Dict, List, Optional
+
+
+Raw = Dict[str, Any]
+Result = Dict[str, Any]
+Results = List[Result]
+
+
+class Query(ABC):
+    @staticmethod
+    @abstractmethod
+    def sub_parser(parser: argparse._SubParsersAction) -> None:
+        ...
+
+    @abstractmethod
+    def next_graph_query(self) -> Optional[str]:
+        ...
+
+    @abstractmethod
+    def transform_result(self, raw: Raw) -> Results:
+        ...
+
+    def sort(self, results: Results) -> Results:
+        return results
 
 
 class GithubGraphQLQuery(object):
 
-    log = logging.getLogger("fgp.GithubGraphQLQuery")
+    log = logging.getLogger("yoshiki.GithubGraphQLQuery")
 
-    def __init__(self, token):
-        self.url = 'https://api.github.com/graphql'
+    def __init__(self, token: str, url = 'https://api.github.com/graphql') -> None:
+        self.url = url
         self.headers = {'Authorization': 'token %s' % token}
         self.session = requests.session()
         # Will get every 25 requests
@@ -44,9 +71,9 @@ class GithubGraphQLQuery(object):
         self.query_count = 0
         # Set an initial value
         self.quota_remain = 5000
-        self.get_rate_limit()
+        self.set_rate_limit()
 
-    def get_rate_limit(self):
+    def set_rate_limit(self) -> None:
         try:
             ratelimit = self.getRateLimit()
         except requests.exceptions.ConnectionError:
@@ -58,7 +85,7 @@ class GithubGraphQLQuery(object):
         self.log.info("Got rate limit data: remain %s resetat %s" % (
             self.quota_remain, self.resetat))
 
-    def wait_for_call(self):
+    def wait_for_call(self) -> None:
         if self.quota_remain <= 150:
             until_reset = self.resetat - datetime.utcnow()
             self.log.info(
@@ -66,9 +93,9 @@ class GithubGraphQLQuery(object):
                 "reset: %s/secs waiting ..." % (
                     self.quota_remain, until_reset.seconds))
             sleep(until_reset.seconds + 60)
-            self.get_rate_limit()
+            self.set_rate_limit()
 
-    def getRateLimit(self):
+    def getRateLimit(self) -> Dict[str, Any]:
         qdata = '''{
           rateLimit {
             limit
@@ -77,14 +104,16 @@ class GithubGraphQLQuery(object):
             resetAt
           }
         }'''
-        data = self.query(qdata, skip_get_rate_limit=True)
+        data = self._query(qdata)
         return data['data']['rateLimit']
 
-    def query(self, qdata, skip_get_rate_limit=False, ignore_not_found=False):
-        if not skip_get_rate_limit:
-            if self.query_count % self.get_rate_limit_rate == 0:
-                self.get_rate_limit()
-            self.wait_for_call()
+    def query(self, qdata: str, ignore_not_found: bool=False) -> Dict[str, Any]:
+        if self.query_count % self.get_rate_limit_rate == 0:
+            self.set_rate_limit()
+        self.wait_for_call()
+        return self._query(qdata, ignore_not_found)
+
+    def _query(self, qdata: str, ignore_not_found: bool=False) -> Dict[str, Any]:
         data = {'query': qdata}
         r = self.session.post(
             url=self.url, json=data, headers=self.headers,
@@ -97,19 +126,55 @@ class GithubGraphQLQuery(object):
             raise Exception("Errors in response see: %s" % r.text)
         return ret
 
+    def run(self, query: Query) -> Results:
+        results: Results = []
+        while True:
+            graph_query = query.next_graph_query()
+            if not graph_query:
+                break
+            data = self.query(graph_query)
+            results += query.transform_result(data)
+        return query.sort(results)
 
-class GithubTopByStars():
 
-    log = logging.getLogger("fgp.GithubTopByStars")
+class PaginatedQuery(Query):
+    def __init__(self):
+        self.after: Optional[str] = None
+        self.count: Optional[int] = None
 
-    def __init__(self, gql, terms):
-        self.gql = gql
-        self.terms = " " + terms if terms else ""
+    def next_graph_query(self) -> Optional[str]:
+        if self.count and not self.after:
+            return None
+        return self.graph_query()
 
-    def get_page(self, stars, after=''):
-        body = """
+    @abstractmethod
+    def graph_query(self) -> str:
+        ...
+
+
+class SearchProjects(PaginatedQuery):
+    log = logging.getLogger("yoshiki.SearchProjects")
+
+    @staticmethod
+    def sub_parser(parser: argparse._SubParsersAction) -> None:
+        sub = parser.add_parser("search-projects")
+        sub.set_defaults(query=SearchProjects)
+        sub.add_argument(
+            '--stars', help='Gather projects with stars > to',
+            required=True)
+        sub.add_argument(
+            '--terms', help='Extra search term such as language:ocaml')
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        super().__init__()
+        self.stars: int = int(args.stars)
+        self.terms: str = args.terms
+
+    def graph_query(self) -> str:
+        return dedent(
+        """
         {
-          search(query: "stars:>%(stars)s%(terms)s is:public fork:false archived:false sort:stars-asc", type: REPOSITORY, first: 25, %(after)s) {
+          search(query: "stars:>%(stars)s%(terms)s is:public fork:false archived:false sort:stars-asc", type: REPOSITORY, first: 25%(after)s) {
             repositoryCount
             pageInfo {
                 hasNextPage endCursor
@@ -144,13 +209,14 @@ class GithubTopByStars():
               }
             }
           }
-        }"""
-        if after:
-            after = 'after: "%s"' % after
-        qdata = body % {'after': after, 'stars': stars, 'terms': self.terms}
-        return self.gql.query(qdata=qdata)
+        }
+        """ % dict(
+            after=', after: "%s"' % self.after if self.after else '',
+            stars=self.stars,
+            terms=' ' + self.terms if self.terms else '',
+        ))
 
-    def strip(self, _repo):
+    def strip(self, _repo: Dict[str, Any]) -> Dict[str, Any]:
         _repo = _repo['node']
         try:
             return {
@@ -166,50 +232,99 @@ class GithubTopByStars():
                     _repo['repositoryTopics']['edges']]
             }
         except Exception:
-            self.log.info("Error to parse repository data %s" % _repo)
-            return None
+            self.log.exception("Error to parse repository data %s" % _repo)
+            return {}
 
-    def get_repos(self, stars):
-        repos = []
-        repo_count = None
-        while True:
-            after = ''
-            while True:
-                ret = self.get_page(stars, after=after)
-                if not repo_count:
-                    repo_count = ret['data']['search']['repositoryCount']
-                    self.log.info("%s repositories to fetch" % repo_count)
-                pageInfo = ret['data']['search']['pageInfo']
-                _repos = ret['data']['search']['edges']
-                _repos = [sr for sr in [self.strip(r) for r in _repos] if sr]
-                repos.extend(_repos)
-                self.log.info("%s repositories read" % len(repos))
-                if pageInfo['hasNextPage']:
-                    after = pageInfo['endCursor']
-                else:
-                    break
-            if len(repos) < repo_count and len(_repos) == 25:
-                stars = repos[-1]['stars']
-            else:
-                break
-        return sorted(repos, key=lambda x: x['stars'], reverse=True)
+    def transform_result(self, ret: Raw) -> Results:
+        if not self.count:
+            self.count = int(ret['data']['search']['repositoryCount'])
+            self.log.info(f"{self.count} repositories to fetch")
+        pageInfo = ret['data']['search']['pageInfo']
+        if pageInfo['hasNextPage']:
+            self.after = pageInfo['endCursor']
+        else:
+            self.after = ''
+        repos = [sr for sr in [self.strip(r) for r in ret['data']['search']['edges']] if sr]
+        self.log.info("%s repositories read" % len(repos))
+        return repos
+
+    def sort(self, results: Results) -> Results:
+        return sorted(results, key=lambda x: x.get('stars', 0), reverse=True)
 
 
-def main():
+class Followers(PaginatedQuery):
+    log = logging.getLogger("yoshiki.Followers")
+    connection = 'followers'
 
-    parser = argparse.ArgumentParser(prog='fgp')
+    @staticmethod
+    def sub_parser(parser: argparse._SubParsersAction) -> None:
+        sub = parser.add_parser(f"list-followers")
+        sub.set_defaults(query=Followers)
+        sub.add_argument('--username', help='The user name', required=True)
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        super().__init__()
+        self.username: str = args.username
+
+    def graph_query(self, connection='followers') -> str:
+        return dedent(
+        """
+        {
+          user(login: "%(username)s") {
+            %(connection)s(first: 100%(after)s) {
+              edges {
+                node {
+                  name
+                  login
+                }
+              }
+            }
+          }
+        }
+        """ % dict(after=', after: "%s"' % self.after if self.after else '',
+                   username=self.username,
+                   connection=self.connection))
+
+    def strip(self, edge: Dict[str, Any]) -> Result:
+        try:
+            return dict(name=edge['node']['name'], login=edge['node']['login'])
+        except Exception:
+            self.log.exception(f"Failed to parse {edge}")
+            return {}
+
+    def transform_result(self, raw: Raw) -> Results:
+        followers = raw['data']['user'][self.connection]['edges']
+        if not self.count:
+            self.count = len(followers)
+        self.log.info(f"{self.count} {self.connection} read")
+        return [user for user in [self.strip(edge) for edge in followers] if followers]
+
+
+class Following(Followers):
+    log = logging.getLogger("yoshiki.Following")
+    connection = 'following'
+
+    @staticmethod
+    def sub_parser(parser: argparse._SubParsersAction) -> None:
+        sub = parser.add_parser(f"list-following")
+        sub.set_defaults(query=Following)
+        sub.add_argument('--username', help='The user name', required=True)
+
+
+queries = [SearchProjects, Followers, Following]
+
+def main() -> None:
+
+    parser = argparse.ArgumentParser(prog='yoshiki')
     parser.add_argument(
         '--loglevel', help='logging level', default='INFO')
     parser.add_argument(
         '--token', help='The token used to query github api',
         required=True)
     parser.add_argument(
-        '--stars', help='Gather projects with stars > to',
-        required=True)
-    parser.add_argument(
-        '--terms', help='Extra search term such as language:ocaml')
-    parser.add_argument(
         '--json', help='Print a json list', action='store_true')
+    sub_parser = parser.add_subparsers()
+    [query.sub_parser(sub_parser) for query in queries]
 
     args = parser.parse_args()
 
@@ -217,13 +332,13 @@ def main():
         level=getattr(logging, args.loglevel.upper()))
 
     gql = GithubGraphQLQuery(args.token)
-    reqc = GithubTopByStars(gql, args.terms)
-    repos = reqc.get_repos(args.stars)
+    query = args.query(args)
+    results = gql.run(query)
     if args.json:
-        print(json.dumps(repos))
+        print(json.dumps(results))
     else:
-        for repo in repos:
-            print(repo)
+        for result in results:
+            print(result)
 
 
 if __name__ == "__main__":
