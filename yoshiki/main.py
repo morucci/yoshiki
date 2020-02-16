@@ -231,6 +231,10 @@ class SearchProjects(PaginatedQuery):
                 'default_branch': _repo['defaultBranchRef']['name'],
                 'description': _repo['description'] or '',
                 'stars': _repo['stargazers']['totalCount'],
+                'stargazers': [
+                    t['node']['login'] for t in
+                    _repo['stargazers'].get('edges', [])
+                ],
                 'forks': _repo['forks']['totalCount'],
                 'watchers': _repo['watchers']['totalCount'],
                 'topics': [
@@ -348,8 +352,13 @@ class Repositories(PaginatedQuery):
                       name
                   }
                   description
-                  stargazers {
+                  stargazers(first: 100) {
                     totalCount
+                    edges {
+                      node {
+                        login
+                      }
+                    }
                   }
                   forks {
                     totalCount
@@ -359,9 +368,9 @@ class Repositories(PaginatedQuery):
                   }
                   repositoryTopics(first: 100) {
                     edges {
-                        node {
-                          topic {
-                            name
+                      node {
+                        topic {
+                          name
                         }
                       }
                     }
