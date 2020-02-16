@@ -216,7 +216,8 @@ class SearchProjects(PaginatedQuery):
             terms=' ' + self.terms if self.terms else '',
         ))
 
-    def strip(self, _repo: Dict[str, Any]) -> Dict[str, Any]:
+    @staticmethod
+    def strip(_repo: Dict[str, Any]) -> Dict[str, Any]:
         _repo = _repo['node']
         try:
             return {
@@ -232,7 +233,7 @@ class SearchProjects(PaginatedQuery):
                     _repo['repositoryTopics']['edges']]
             }
         except Exception:
-            self.log.exception("Error to parse repository data %s" % _repo)
+            SearchProjects.log.exception("Error to parse repository data %s" % _repo)
             return {}
 
     def transform_result(self, ret: Raw) -> Results:
@@ -244,7 +245,7 @@ class SearchProjects(PaginatedQuery):
             self.after = pageInfo['endCursor']
         else:
             self.after = ''
-        repos = [sr for sr in [self.strip(r) for r in ret['data']['search']['edges']] if sr]
+        repos = [sr for sr in [SearchProjects.strip(r) for r in ret['data']['search']['edges']] if sr]
         self.log.info("%s repositories read" % len(repos))
         return repos
 
@@ -266,7 +267,7 @@ class Followers(PaginatedQuery):
         super().__init__()
         self.username: str = args.username
 
-    def graph_query(self, connection='followers') -> str:
+    def graph_query(self) -> str:
         return dedent(
         """
         {
@@ -285,11 +286,12 @@ class Followers(PaginatedQuery):
                    username=self.username,
                    connection=self.connection))
 
-    def strip(self, edge: Dict[str, Any]) -> Result:
+    @staticmethod
+    def strip(edge: Dict[str, Any]) -> Result:
         try:
             return dict(name=edge['node']['name'], login=edge['node']['login'])
         except Exception:
-            self.log.exception(f"Failed to parse {edge}")
+            Followers.log.exception(f"Failed to parse {edge}")
             return {}
 
     def transform_result(self, raw: Raw) -> Results:
@@ -297,7 +299,7 @@ class Followers(PaginatedQuery):
         if not self.count:
             self.count = len(followers)
         self.log.info(f"{self.count} {self.connection} read")
-        return [user for user in [self.strip(edge) for edge in followers] if followers]
+        return [user for user in [Followers.strip(edge) for edge in followers] if followers]
 
 
 class Following(Followers):
@@ -327,6 +329,9 @@ def main() -> None:
     [query.sub_parser(sub_parser) for query in queries]
 
     args = parser.parse_args()
+    if not getattr(args, 'query', None):
+        parser.print_help()
+        return
 
     logging.basicConfig(
         level=getattr(logging, args.loglevel.upper()))
