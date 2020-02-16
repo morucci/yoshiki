@@ -55,7 +55,7 @@ class TestSearch(unittest.TestCase):
 
     def test_search(self) -> None:
         gql = yoshiki.main.GithubGraphQLQuery("fake-token", 'http://localhost:8080')
-        reqc = yoshiki.main.GithubTopByStars(argparse.Namespace(stars=42, terms=''))
+        reqc = yoshiki.main.SearchProjects(argparse.Namespace(stars=42, terms=''))
         repos = gql.run(reqc)
         print(repos)
         self.assertEqual(len(repos), 2)
