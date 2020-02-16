@@ -62,7 +62,7 @@ class GithubGraphQLQuery(object):
 
     log = logging.getLogger("yoshiki.GithubGraphQLQuery")
 
-    def __init__(self, token: str, url = 'https://api.github.com/graphql') -> None:
+    def __init__(self, token: str, url: str = 'https://api.github.com/graphql') -> None:
         self.url = url
         self.headers = {'Authorization': 'token %s' % token}
         self.session = requests.session()
@@ -95,7 +95,7 @@ class GithubGraphQLQuery(object):
             sleep(until_reset.seconds + 60)
             self.set_rate_limit()
 
-    def getRateLimit(self) -> Dict[str, Any]:
+    def getRateLimit(self) -> Raw:
         qdata = '''{
           rateLimit {
             limit
@@ -105,15 +105,18 @@ class GithubGraphQLQuery(object):
           }
         }'''
         data = self._query(qdata)
-        return data['data']['rateLimit']
+        rate_limit = data['data']['rateLimit']
+        if not isinstance(rate_limit, dict):
+            raise Exception("Rate limit it not a dict: %s" % rate_limit)
+        return rate_limit
 
-    def query(self, qdata: str, ignore_not_found: bool=False) -> Dict[str, Any]:
+    def query(self, qdata: str, ignore_not_found: bool=False) -> Raw:
         if self.query_count % self.get_rate_limit_rate == 0:
             self.set_rate_limit()
         self.wait_for_call()
         return self._query(qdata, ignore_not_found)
 
-    def _query(self, qdata: str, ignore_not_found: bool=False) -> Dict[str, Any]:
+    def _query(self, qdata: str, ignore_not_found: bool=False) -> Raw:
         data = {'query': qdata}
         r = self.session.post(
             url=self.url, json=data, headers=self.headers,
@@ -124,6 +127,8 @@ class GithubGraphQLQuery(object):
         ret = r.json()
         if 'errors' in ret:
             raise Exception("Errors in response see: %s" % r.text)
+        if not isinstance(ret, dict):
+            raise Exception("Graph result is not a dict: %s" % ret)
         return ret
 
     def run(self, query: Query) -> Results:
@@ -138,7 +143,7 @@ class GithubGraphQLQuery(object):
 
 
 class PaginatedQuery(Query):
-    def __init__(self):
+    def __init__(self) -> None:
         self.after: Optional[str] = None
         self.count: Optional[int] = None
 
@@ -217,7 +222,7 @@ class SearchProjects(PaginatedQuery):
         ))
 
     @staticmethod
-    def strip(_repo: Dict[str, Any]) -> Dict[str, Any]:
+    def strip(_repo: Result) -> Result:
         _repo = _repo['node']
         try:
             return {
@@ -287,7 +292,7 @@ class Followers(PaginatedQuery):
                    connection=self.connection))
 
     @staticmethod
-    def strip(edge: Dict[str, Any]) -> Result:
+    def strip(edge: Result) -> Result:
         try:
             return dict(name=edge['node']['name'], login=edge['node']['login'])
         except Exception:
