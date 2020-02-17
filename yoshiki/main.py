@@ -34,35 +34,16 @@ from datetime import datetime
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-
-Raw = Dict[str, Any]
-Result = Dict[str, Any]
-Results = List[Result]
-
-
-class Query(ABC):
-    @staticmethod
-    @abstractmethod
-    def sub_parser(parser: argparse._SubParsersAction) -> None:
-        ...
-
-    @abstractmethod
-    def next_graph_query(self) -> Optional[str]:
-        ...
-
-    @abstractmethod
-    def transform_result(self, raw: Raw) -> Results:
-        ...
-
-    def sort(self, results: Results) -> Results:
-        return results
+from . helpers import Query, PaginatedQuery, Raw, Result, Results
+from . user import Followers, Following
+from . repository import Stargazers, Watchers
 
 
 class GithubGraphQLQuery(object):
 
     log = logging.getLogger("yoshiki.GithubGraphQLQuery")
 
-    def __init__(self, token: str, url = 'https://api.github.com/graphql') -> None:
+    def __init__(self, token: str, url: str = 'https://api.github.com/graphql') -> None:
         self.url = url
         self.headers = {'Authorization': 'token %s' % token}
         self.session = requests.session()
@@ -95,7 +76,7 @@ class GithubGraphQLQuery(object):
             sleep(until_reset.seconds + 60)
             self.set_rate_limit()
 
-    def getRateLimit(self) -> Dict[str, Any]:
+    def getRateLimit(self) -> Raw:
         qdata = '''{
           rateLimit {
             limit
@@ -105,15 +86,18 @@ class GithubGraphQLQuery(object):
           }
         }'''
         data = self._query(qdata)
-        return data['data']['rateLimit']
+        rate_limit = data['data']['rateLimit']
+        if not isinstance(rate_limit, dict):
+            raise Exception("Rate limit it not a dict: %s" % rate_limit)
+        return rate_limit
 
-    def query(self, qdata: str, ignore_not_found: bool=False) -> Dict[str, Any]:
+    def query(self, qdata: str, ignore_not_found: bool=False) -> Raw:
         if self.query_count % self.get_rate_limit_rate == 0:
             self.set_rate_limit()
         self.wait_for_call()
         return self._query(qdata, ignore_not_found)
 
-    def _query(self, qdata: str, ignore_not_found: bool=False) -> Dict[str, Any]:
+    def _query(self, qdata: str, ignore_not_found: bool=False) -> Raw:
         data = {'query': qdata}
         r = self.session.post(
             url=self.url, json=data, headers=self.headers,
@@ -124,6 +108,8 @@ class GithubGraphQLQuery(object):
         ret = r.json()
         if 'errors' in ret:
             raise Exception("Errors in response see: %s" % r.text)
+        if not isinstance(ret, dict):
+            raise Exception("Graph result is not a dict: %s" % ret)
         return ret
 
     def run(self, query: Query) -> Results:
@@ -135,21 +121,6 @@ class GithubGraphQLQuery(object):
             data = self.query(graph_query)
             results += query.transform_result(data)
         return query.sort(results)
-
-
-class PaginatedQuery(Query):
-    def __init__(self):
-        self.after: Optional[str] = None
-        self.count: Optional[int] = None
-
-    def next_graph_query(self) -> Optional[str]:
-        if self.count and not self.after:
-            return None
-        return self.graph_query()
-
-    @abstractmethod
-    def graph_query(self) -> str:
-        ...
 
 
 class SearchProjects(PaginatedQuery):
@@ -216,7 +187,8 @@ class SearchProjects(PaginatedQuery):
             terms=' ' + self.terms if self.terms else '',
         ))
 
-    def strip(self, _repo: Dict[str, Any]) -> Dict[str, Any]:
+    @staticmethod
+    def strip(_repo: Result) -> Result:
         _repo = _repo['node']
         try:
             return {
@@ -225,6 +197,10 @@ class SearchProjects(PaginatedQuery):
                 'default_branch': _repo['defaultBranchRef']['name'],
                 'description': _repo['description'] or '',
                 'stars': _repo['stargazers']['totalCount'],
+                'stargazers': [
+                    t['node']['login'] for t in
+                    _repo['stargazers'].get('edges', [])
+                ],
                 'forks': _repo['forks']['totalCount'],
                 'watchers': _repo['watchers']['totalCount'],
                 'topics': [
@@ -232,7 +208,7 @@ class SearchProjects(PaginatedQuery):
                     _repo['repositoryTopics']['edges']]
             }
         except Exception:
-            self.log.exception("Error to parse repository data %s" % _repo)
+            SearchProjects.log.exception("Error to parse repository data %s" % _repo)
             return {}
 
     def transform_result(self, ret: Raw) -> Results:
@@ -244,7 +220,7 @@ class SearchProjects(PaginatedQuery):
             self.after = pageInfo['endCursor']
         else:
             self.after = ''
-        repos = [sr for sr in [self.strip(r) for r in ret['data']['search']['edges']] if sr]
+        repos = [sr for sr in [SearchProjects.strip(r) for r in ret['data']['search']['edges']] if sr]
         self.log.info("%s repositories read" % len(repos))
         return repos
 
@@ -252,66 +228,83 @@ class SearchProjects(PaginatedQuery):
         return sorted(results, key=lambda x: x.get('stars', 0), reverse=True)
 
 
-class Followers(PaginatedQuery):
-    log = logging.getLogger("yoshiki.Followers")
-    connection = 'followers'
+
+class Repositories(PaginatedQuery):
+    log = logging.getLogger("yoshiki.Repositories")
 
     @staticmethod
     def sub_parser(parser: argparse._SubParsersAction) -> None:
-        sub = parser.add_parser(f"list-followers")
-        sub.set_defaults(query=Followers)
+        sub = parser.add_parser(f"list-repositories")
+        sub.set_defaults(query=Repositories)
         sub.add_argument('--username', help='The user name', required=True)
 
     def __init__(self, args: argparse.Namespace) -> None:
         super().__init__()
         self.username: str = args.username
 
-    def graph_query(self, connection='followers') -> str:
+    def graph_query(self) -> str:
         return dedent(
         """
         {
           user(login: "%(username)s") {
-            %(connection)s(first: 100%(after)s) {
+            repositories(isFork: false first: 100 orderBy: {direction: DESC field: STARGAZERS}%(after)s) {
+              totalCount
+              pageInfo {
+                hasNextPage endCursor
+              }
               edges {
                 node {
-                  name
-                  login
+                  nameWithOwner
+                  defaultBranchRef {
+                      name
+                  }
+                  description
+                  stargazers(first: 100) {
+                    totalCount
+                    edges {
+                      node {
+                        login
+                      }
+                    }
+                  }
+                  forks {
+                    totalCount
+                  }
+                  watchers {
+                    totalCount
+                  }
+                  repositoryTopics(first: 100) {
+                    edges {
+                      node {
+                        topic {
+                          name
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
           }
         }
         """ % dict(after=', after: "%s"' % self.after if self.after else '',
-                   username=self.username,
-                   connection=self.connection))
+                   username=self.username))
 
-    def strip(self, edge: Dict[str, Any]) -> Result:
-        try:
-            return dict(name=edge['node']['name'], login=edge['node']['login'])
-        except Exception:
-            self.log.exception(f"Failed to parse {edge}")
-            return {}
-
-    def transform_result(self, raw: Raw) -> Results:
-        followers = raw['data']['user'][self.connection]['edges']
+    def transform_result(self, ret: Raw) -> Results:
         if not self.count:
-            self.count = len(followers)
-        self.log.info(f"{self.count} {self.connection} read")
-        return [user for user in [self.strip(edge) for edge in followers] if followers]
+            self.count = int(ret['data']['user']['repositories']['totalCount'])
+            self.log.info(f"{self.count} repositories to fetch")
+        pageInfo = ret['data']['user']['repositories']['pageInfo']
+        if pageInfo['hasNextPage']:
+            self.after = pageInfo['endCursor']
+        else:
+            self.after = ''
+        repos = [sr for sr in [SearchProjects.strip(r) for r in ret['data']['user']['repositories']['edges']] if sr]
+        self.log.info("%s repositories read" % len(repos))
+        return repos
 
 
-class Following(Followers):
-    log = logging.getLogger("yoshiki.Following")
-    connection = 'following'
-
-    @staticmethod
-    def sub_parser(parser: argparse._SubParsersAction) -> None:
-        sub = parser.add_parser(f"list-following")
-        sub.set_defaults(query=Following)
-        sub.add_argument('--username', help='The user name', required=True)
-
-
-queries = [SearchProjects, Followers, Following]
+queries = [SearchProjects, Followers, Following, Repositories, Stargazers, Watchers]
 
 def main() -> None:
 
@@ -327,6 +320,9 @@ def main() -> None:
     [query.sub_parser(sub_parser) for query in queries]
 
     args = parser.parse_args()
+    if not getattr(args, 'query', None):
+        parser.print_help()
+        return
 
     logging.basicConfig(
         level=getattr(logging, args.loglevel.upper()))
